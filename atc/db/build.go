@@ -1,6 +1,8 @@
 package db
 
 import (
+	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -12,6 +14,9 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/lib/pq"
 
+	es "github.com/elastic/go-elasticsearch/v7"
+	esapi "github.com/elastic/go-elasticsearch/v7/esapi"
+
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db/encryption"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -19,6 +24,12 @@ import (
 )
 
 const schema = "exec.v2"
+
+var cfg = es.Config{Addresses: []string{"http://es01:9200"}}
+
+var elasticsearch, err = es.NewClient(cfg)
+
+var logger = lager.NewLogger("build.go")
 
 var ErrAdoptRerunBuildHasNoInputs = errors.New("inputs not ready for build to rerun")
 
@@ -1507,21 +1518,77 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 	return nil
 }
 
+type buildEventDoc struct {
+	ID      int       `json:"event_id"`
+	BuildID int       `json:"build_id"`
+	Type    string    `json:"type"`
+	Version string    `json:"version"`
+	Payload atc.Event `json:"payload"`
+}
+
 func (b *build) saveEvent(tx Tx, event atc.Event) error {
-	payload, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
+	// payload, err := json.Marshal(event)
+	// if err != nil {
+	// 	return err
+	// }
 
 	table := fmt.Sprintf("team_build_events_%d", b.teamID)
 	if b.pipelineID != 0 {
 		table = fmt.Sprintf("pipeline_build_events_%d", b.pipelineID)
 	}
-	_, err = psql.Insert(table).
-		Columns("event_id", "build_id", "type", "version", "payload").
-		Values(sq.Expr("nextval('"+buildEventSeq(b.id)+"')"), b.id, string(event.EventType()), string(event.Version()), payload).
-		RunWith(tx).
-		Exec()
+	// _, err = psql.Insert(table).
+	// 	Columns("event_id", "build_id", "type", "version", "payload").
+	// 	Values(sq.Expr("nextval('"+buildEventSeq(b.id)+"')"), b.id, string(event.EventType()), string(event.Version()), payload).
+	// 	RunWith(tx).
+	// 	Exec()
+
+	eventDoc := buildEventDoc{
+		ID:      100,
+		BuildID: b.id,
+		Type:    string(event.EventType()),
+		Version: string(event.Version()),
+		Payload: event,
+	}
+	eventJSONDoc, err := json.Marshal(eventDoc)
+	if err != nil {
+		return err
+	}
+
+	req := esapi.IndexRequest{
+		Index:   table,
+		Body:    bytes.NewReader(eventJSONDoc),
+		Refresh: "true",
+	}
+
+	// Perform the request with the client.
+	res, err := req.Do(context.Background(), elasticsearch)
+	if err != nil {
+		logger.Error("Error getting response", err)
+		return err
+	}
+
+	defer res.Body.Close()
+
+	if res.IsError() {
+		var e map[string]interface{}
+		if err := json.NewDecoder(res.Body).Decode(&e); err != nil {
+			logger.Error("Error parsing the failure index response body", err)
+		} else {
+			logger.Error("", errors.New("Error indexing build events"), lager.Data{
+				"status": res.Status(),
+				"cause": e,
+			})
+		}
+	} else {
+		// Deserialize the response into a map.
+		var r map[string]interface{}
+		if err := json.NewDecoder(res.Body).Decode(&r); err != nil {
+			logger.Error("Error parsing the response body", err)
+		} else {
+			logger.Info("event indexed", lager.Data{"status": res.Status(), "result": r["result"]})
+		}
+	}
+
 	return err
 }
 
