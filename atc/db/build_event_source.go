@@ -1,8 +1,10 @@
 package db
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"github.com/olivere/elastic/v7"
 	"strconv"
 	"sync"
 
@@ -13,6 +15,8 @@ import (
 
 var ErrEndOfBuildEventStream = errors.New("end of build event stream")
 var ErrBuildEventStreamClosed = errors.New("build event stream closed")
+
+const indexPatternPrefix = "concourse-build-events"
 
 //counterfeiter:generate . EventSource
 type EventSource interface {
@@ -40,7 +44,7 @@ func newBuildEventSource(
 
 		notifier: notifier,
 
-		events: make(chan event.Envelope, 2000),
+		events: make(chan event.Envelope, 500),
 		stop:   make(chan struct{}),
 		wg:     wg,
 
@@ -64,6 +68,8 @@ type buildEventSource struct {
 	stop   chan struct{}
 	err    error
 	wg     *sync.WaitGroup
+
+	client *elastic.Client
 
 	watcherFunc buildCompleteWatcherFunc
 }
@@ -121,17 +127,19 @@ func (source *buildEventSource) collectEvents(from uint) {
 			return
 		}
 
-		rows, err := psql.Select("event_id", "type", "version", "payload").
+		existsInPostgres := false
+		err = sq.Select("1").
+			Prefix("SELECT EXISTS (").
 			From(source.table).
 			Where(sq.Or{
 				sq.Eq{"build_id": source.buildID},
 				sq.Eq{"build_id_old": source.buildID},
 			}).
-			Where(sq.Gt{"event_id": cursor}).
-			OrderBy("event_id ASC").
-			Limit(uint64(batchSize)).
+			Suffix(")").
 			RunWith(tx).
-			Query()
+			QueryRow().
+			Scan(&existsInPostgres)
+
 		if err != nil {
 			source.err = err
 			close(source.events)
@@ -140,37 +148,104 @@ func (source *buildEventSource) collectEvents(from uint) {
 
 		rowsReturned := 0
 
-		for rows.Next() {
-			rowsReturned++
-
-			var t, v, p string
-			err := rows.Scan(&cursor, &t, &v, &p)
+		if existsInPostgres {
+			rows, err := psql.Select("event_id", "type", "version", "payload").
+				From(source.table).
+				Where(sq.Or{
+					sq.Eq{"build_id": source.buildID},
+					sq.Eq{"build_id_old": source.buildID},
+				}).
+				Where(sq.Gt{"event_id": cursor}).
+				OrderBy("event_id ASC").
+				Limit(uint64(batchSize)).
+				RunWith(tx).
+				Query()
 			if err != nil {
-				_ = rows.Close()
-
 				source.err = err
 				close(source.events)
 				return
 			}
 
-			data := json.RawMessage(p)
+			for rows.Next() {
+				rowsReturned++
 
-			ev := event.Envelope{
-				Data:    &data,
-				Event:   atc.EventType(t),
-				Version: atc.EventVersion(v),
-				EventID: strconv.Itoa(cursor),
+				var t, v, p string
+				err := rows.Scan(&cursor, &t, &v, &p)
+				if err != nil {
+					_ = rows.Close()
+
+					source.err = err
+					close(source.events)
+					return
+				}
+
+				data := json.RawMessage(p)
+
+				ev := event.Envelope{
+					Data:    &data,
+					Event:   atc.EventType(t),
+					Version: atc.EventVersion(v),
+					EventID: strconv.Itoa(cursor),
+				}
+
+				select {
+				case source.events <- ev:
+				case <-source.stop:
+					_ = rows.Close()
+
+					source.err = ErrBuildEventStreamClosed
+					close(source.events)
+					return
+				}
+			}
+		} else {
+
+			req := source.client.Search(indexPatternPrefix).
+				Query(elastic.NewTermQuery("build_id", source.buildID)).
+				Sort("event_id", true).
+				Size(batchSize)
+
+			if from != 0 {
+				req = req.SearchAfter(from)
 			}
 
-			select {
-			case source.events <- ev:
-			case <-source.stop:
-				_ = rows.Close()
-
-				source.err = ErrBuildEventStreamClosed
+			//revisit: to use request context explicitly to cancel the operation when the request is closed
+			searchResult, err := req.Do(context.Background())
+			if err != nil {
+				source.err = err
 				close(source.events)
 				return
 			}
+
+			rowsReturned = len(searchResult.Hits.Hits)
+			if rowsReturned == 0 {
+				close(source.events)
+				return
+			}
+
+			var envelope event.Envelope
+			for _, hit := range searchResult.Hits.Hits {
+
+				if err = json.Unmarshal(hit.Source, &envelope); err != nil {
+					source.err = err
+					close(source.events)
+					return
+				}
+				select {
+				case source.events <- envelope:
+				case <-source.stop:
+					source.err = ErrBuildEventStreamClosed
+					close(source.events)
+					return
+				}
+			}
+			cursor, err = strconv.Atoi(envelope.EventID)
+			if err != nil {
+				source.err = err
+				close(source.events)
+				return
+			}
+
 		}
 
 		err = tx.Commit()
