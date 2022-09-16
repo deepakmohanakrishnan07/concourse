@@ -589,7 +589,7 @@ func (j *job) Build(name string) (Build, bool, error) {
 
 	row := query.RunWith(j.conn).QueryRow()
 
-	build := newEmptyBuild(j.conn, j.lockFactory)
+	build := newEmptyBuild(j.conn, j.lockFactory, j.elasticsearchClient)
 
 	err := scanBuild(build, row, j.conn.EncryptionStrategy())
 	if err != nil {
@@ -828,7 +828,7 @@ func (j *job) GetPendingBuilds() ([]Build, error) {
 	defer Close(rows)
 
 	for rows.Next() {
-		build := newEmptyBuild(j.conn, j.lockFactory)
+		build := newEmptyBuild(j.conn, j.lockFactory, j.elasticsearchClient)
 		err = scanBuild(build, rows, j.conn.EncryptionStrategy())
 		if err != nil {
 			return nil, err
@@ -853,7 +853,7 @@ func (j *job) CreateBuild(createdBy string) (Build, error) {
 		return nil, err
 	}
 
-	build := newEmptyBuild(j.conn, j.lockFactory)
+	build := newEmptyBuild(j.conn, j.lockFactory, j.elasticsearchClient)
 	err = createBuild(tx, build, map[string]interface{}{
 		"name":               buildName,
 		"job_id":             j.id,
@@ -923,7 +923,7 @@ func (j *job) tryRerunBuild(buildToRerun Build, createdBy string) (Build, error)
 		return nil, err
 	}
 
-	rerunBuild := newEmptyBuild(j.conn, j.lockFactory)
+	rerunBuild := newEmptyBuild(j.conn, j.lockFactory, j.elasticsearchClient)
 	err = createBuild(tx, rerunBuild, map[string]interface{}{
 		"name":         rerunBuildName,
 		"job_id":       j.id,
@@ -1114,7 +1114,7 @@ func (j *job) getRunningBuildsBySerialGroup(tx Tx, serialGroups []string) ([]Bui
 	bs := []Build{}
 
 	for rows.Next() {
-		build := newEmptyBuild(j.conn, j.lockFactory)
+		build := newEmptyBuild(j.conn, j.lockFactory, j.elasticsearchClient)
 		err = scanBuild(build, rows, j.conn.EncryptionStrategy())
 		if err != nil {
 			return nil, err
@@ -1145,7 +1145,7 @@ func (j *job) getNextPendingBuildBySerialGroup(tx Tx, serialGroups []string) (Bu
 			ORDER BY COALESCE(rerun_of, id) ASC, id ASC
 			LIMIT 1`, params...)
 
-	build := newEmptyBuild(j.conn, j.lockFactory)
+	build := newEmptyBuild(j.conn, j.lockFactory, j.elasticsearchClient)
 	err = scanBuild(build, row, j.conn.EncryptionStrategy())
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -1265,7 +1265,7 @@ func (j *job) nextBuild(tx Tx) (Build, error) {
 		RunWith(tx).
 		QueryRow()
 
-	nextBuild := newEmptyBuild(j.conn, j.lockFactory)
+	nextBuild := newEmptyBuild(j.conn, j.lockFactory, j.elasticsearchClient)
 	err := scanBuild(nextBuild, row, j.conn.EncryptionStrategy())
 	if err == nil {
 		next = nextBuild
@@ -1285,7 +1285,7 @@ func (j *job) finishedBuild(tx Tx) (Build, error) {
 		RunWith(tx).
 		QueryRow()
 
-	finishedBuild := newEmptyBuild(j.conn, j.lockFactory)
+	finishedBuild := newEmptyBuild(j.conn, j.lockFactory, j.elasticsearchClient)
 	err := scanBuild(finishedBuild, row, j.conn.EncryptionStrategy())
 	if err == nil {
 		finished = finishedBuild

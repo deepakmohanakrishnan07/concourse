@@ -33,6 +33,7 @@ func newBuildEventSource(
 	notifier Notifier,
 	from uint,
 	watcher buildCompleteWatcherFunc,
+	elasticsearchClient *elastic.Client,
 ) *buildEventSource {
 	wg := new(sync.WaitGroup)
 
@@ -47,6 +48,8 @@ func newBuildEventSource(
 		events: make(chan event.Envelope, 500),
 		stop:   make(chan struct{}),
 		wg:     wg,
+
+		elasticsearchClient: elasticsearchClient,
 
 		watcherFunc: watcher,
 	}
@@ -69,7 +72,7 @@ type buildEventSource struct {
 	err    error
 	wg     *sync.WaitGroup
 
-	client *elastic.Client
+	elasticsearchClient *elastic.Client
 
 	watcherFunc buildCompleteWatcherFunc
 }
@@ -200,7 +203,7 @@ func (source *buildEventSource) collectEvents(from uint) {
 			}
 		} else {
 
-			req := source.client.Search(indexPatternPrefix).
+			req := source.elasticsearchClient.Search(indexPatternPrefix).
 				Query(elastic.NewTermQuery("build_id", source.buildID)).
 				Sort("event_id", true).
 				Size(batchSize)

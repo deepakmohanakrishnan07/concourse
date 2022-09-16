@@ -1,10 +1,12 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/olivere/elastic/v7"
 	"strconv"
 	"strings"
 	"time"
@@ -267,8 +269,8 @@ type build struct {
 	eventIdSeq util.SequenceGenerator
 }
 
-func newEmptyBuild(conn Conn, lockFactory lock.LockFactory) *build {
-	return &build{pipelineRef: pipelineRef{conn: conn, lockFactory: lockFactory}}
+func newEmptyBuild(conn Conn, lockFactory lock.LockFactory, elasticsearchClient *elastic.Client) *build {
+	return &build{pipelineRef: pipelineRef{conn: conn, lockFactory: lockFactory, elasticsearchClient: elasticsearchClient}}
 }
 
 var ErrBuildDisappeared = errors.New("build disappeared from db")
@@ -766,7 +768,7 @@ WITH RECURSIVE pipelines_to_archive AS (
 		}
 		defer pipelineRows.Close()
 
-		err = archivePipelines(tx, b.conn, b.lockFactory, pipelineRows)
+		err = archivePipelines(tx, b.conn, b.lockFactory, pipelineRows, b.elasticsearchClient)
 		if err != nil {
 			return err
 		}
@@ -1032,7 +1034,7 @@ func (b *build) Preparation() (BuildPreparation, bool, error) {
 		maxInFlightReachedStatus = BuildPreparationStatusBlocking
 	}
 
-	tf := NewTeamFactory(b.conn, b.lockFactory)
+	tf := NewTeamFactory(b.conn, b.lockFactory, b.elasticsearchClient)
 	t, found, err := tf.FindTeam(b.teamName)
 	if err != nil {
 		return BuildPreparation{}, false, err
@@ -1168,6 +1170,7 @@ func (b *build) Events(from uint) (EventSource, error) {
 			}
 			return completed, nil
 		},
+		b.elasticsearchClient,
 	), nil
 }
 
@@ -1814,7 +1817,7 @@ func (b *build) SavePipeline(
 		return nil, false, err
 	}
 
-	pipeline := newPipeline(b.conn, b.lockFactory)
+	pipeline := newPipeline(b.conn, b.lockFactory, b.elasticsearchClient)
 	err = scanPipeline(
 		pipeline,
 		pipelinesQuery.
@@ -1989,11 +1992,25 @@ func (b *build) saveEvent(tx Tx, event atc.Event) error {
 		}
 	}
 
-	_, err = psql.Insert(b.eventsTable()).
-		Columns("event_id", "build_id", "type", "version", "payload").
-		Values(b.eventIdSeq.Next(), b.id, string(event.EventType()), string(event.Version()), payload).
-		RunWith(tx).
-		Exec()
+	data := json.RawMessage(payload)
+	eventDoc := atc.EventDoc{
+		EventID:      b.eventIdSeq.Next(),
+		BuildID:      b.id,
+		BuildName:    b.Name(),
+		JobID:        b.JobID(),
+		JobName:      b.JobName(),
+		PipelineID:   b.PipelineID(),
+		PipelineName: b.PipelineName(),
+		TeamID:       b.TeamID(),
+		TeamName:     b.TeamName(),
+		EventType:    event.EventType(),
+		Version:      event.Version(),
+		Data:         &data,
+	}
+
+	indexRequest := b.elasticsearchClient.Index()
+	_, err = indexRequest.Index("build_event_logs").BodyJson(eventDoc).Do(context.Background())
+
 	return err
 }
 

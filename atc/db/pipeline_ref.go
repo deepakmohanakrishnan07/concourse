@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"github.com/olivere/elastic/v7"
 
 	sq "github.com/Masterminds/squirrel"
 
@@ -25,8 +26,9 @@ type pipelineRef struct {
 	pipelineName         string
 	pipelineInstanceVars atc.InstanceVars
 
-	conn        Conn
-	lockFactory lock.LockFactory
+	conn                Conn
+	lockFactory         lock.LockFactory
+	elasticsearchClient *elastic.Client
 }
 
 func NewPipelineRef(id int, name string, instanceVars atc.InstanceVars, conn Conn, lockFactory lock.LockFactory) PipelineRef {
@@ -68,7 +70,7 @@ func (r pipelineRef) Pipeline() (Pipeline, bool, error) {
 		RunWith(r.conn).
 		QueryRow()
 
-	pipeline := newPipeline(r.conn, r.lockFactory)
+	pipeline := newPipeline(r.conn, r.lockFactory, r.elasticsearchClient)
 	err := scanPipeline(pipeline, row)
 	if err != nil {
 		if err == sql.ErrNoRows {

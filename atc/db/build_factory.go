@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/olivere/elastic/v7"
 	"strconv"
 	"time"
 
@@ -82,23 +83,25 @@ type BuildFactory interface {
 }
 
 type buildFactory struct {
-	conn              Conn
-	lockFactory       lock.LockFactory
-	oneOffGracePeriod time.Duration
-	failedGracePeriod time.Duration
+	conn                Conn
+	lockFactory         lock.LockFactory
+	oneOffGracePeriod   time.Duration
+	failedGracePeriod   time.Duration
+	elasticsearchClient *elastic.Client
 }
 
-func NewBuildFactory(conn Conn, lockFactory lock.LockFactory, oneOffGracePeriod time.Duration, failedGracePeriod time.Duration) BuildFactory {
+func NewBuildFactory(conn Conn, lockFactory lock.LockFactory, oneOffGracePeriod time.Duration, failedGracePeriod time.Duration, elasticsearchClient *elastic.Client) BuildFactory {
 	return &buildFactory{
-		conn:              conn,
-		lockFactory:       lockFactory,
-		oneOffGracePeriod: oneOffGracePeriod,
-		failedGracePeriod: failedGracePeriod,
+		conn:                conn,
+		lockFactory:         lockFactory,
+		oneOffGracePeriod:   oneOffGracePeriod,
+		failedGracePeriod:   failedGracePeriod,
+		elasticsearchClient: elasticsearchClient,
 	}
 }
 
 func (f *buildFactory) BuildForAPI(buildID int) (BuildForAPI, bool, error) {
-	build := newEmptyBuild(f.conn, f.lockFactory)
+	build := newEmptyBuild(f.conn, f.lockFactory, f.elasticsearchClient)
 	row := buildsQuery.
 		Where(sq.Eq{"b.id": buildID}).
 		RunWith(f.conn).
@@ -134,7 +137,7 @@ func (f *buildFactory) BuildForAPI(buildID int) (BuildForAPI, bool, error) {
 }
 
 func (f *buildFactory) Build(buildID int) (Build, bool, error) {
-	build := newEmptyBuild(f.conn, f.lockFactory)
+	build := newEmptyBuild(f.conn, f.lockFactory, f.elasticsearchClient)
 	row := buildsQuery.
 		Where(sq.Eq{"b.id": buildID}).
 		RunWith(f.conn).
@@ -262,7 +265,7 @@ func getBuilds(buildsQuery sq.SelectBuilder, conn Conn, lockFactory lock.LockFac
 	bs := []Build{}
 
 	for rows.Next() {
-		b := newEmptyBuild(conn, lockFactory)
+		b := newEmptyBuild(conn, lockFactory, nil)
 		err := scanBuild(b, rows, conn.EncryptionStrategy())
 		if err != nil {
 			return nil, err
@@ -306,7 +309,7 @@ func getBuildsWithDates(buildsQuery, minMaxIdQuery sq.SelectBuilder, page Page, 
 		found := false
 		for fromRow.Next() {
 			found = true
-			build := newEmptyBuild(conn, lockFactory)
+			build := newEmptyBuild(conn, lockFactory, nil)
 			err = scanBuild(build, fromRow, conn.EncryptionStrategy())
 			if err != nil {
 				return nil, Pagination{}, err
@@ -338,7 +341,7 @@ func getBuildsWithDates(buildsQuery, minMaxIdQuery sq.SelectBuilder, page Page, 
 		found := false
 		for untilRow.Next() {
 			found = true
-			build := newEmptyBuild(conn, lockFactory)
+			build := newEmptyBuild(conn, lockFactory, nil)
 			err = scanBuild(build, untilRow, conn.EncryptionStrategy())
 			if err != nil {
 				return nil, Pagination{}, err
@@ -418,7 +421,7 @@ func getBuildsWithPagination(buildsQuery, minMaxIdQuery sq.SelectBuilder, page P
 
 	builds := make([]BuildForAPI, 0)
 	for rows.Next() {
-		build := newEmptyBuild(conn, lockFactory)
+		build := newEmptyBuild(conn, lockFactory, nil)
 		err = scanBuild(build, rows, conn.EncryptionStrategy())
 		if err != nil {
 			return nil, Pagination{}, err
@@ -449,7 +452,7 @@ func getBuildsWithPagination(buildsQuery, minMaxIdQuery sq.SelectBuilder, page P
 		RunWith(tx).
 		QueryRow()
 
-	build := newEmptyBuild(conn, lockFactory)
+	build := newEmptyBuild(conn, lockFactory, nil)
 	err = scanBuild(build, row, conn.EncryptionStrategy())
 	if err != nil && err != sql.ErrNoRows {
 		return builds, Pagination{}, err
@@ -467,7 +470,7 @@ func getBuildsWithPagination(buildsQuery, minMaxIdQuery sq.SelectBuilder, page P
 		RunWith(tx).
 		QueryRow()
 
-	build = newEmptyBuild(conn, lockFactory)
+	build = newEmptyBuild(conn, lockFactory, nil)
 	err = scanBuild(build, row, conn.EncryptionStrategy())
 	if err != nil && err != sql.ErrNoRows {
 		return builds, Pagination{}, err

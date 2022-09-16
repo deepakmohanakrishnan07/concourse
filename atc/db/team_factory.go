@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"github.com/olivere/elastic/v7"
 	"strings"
 
 	"encoding/json"
@@ -23,14 +24,16 @@ type TeamFactory interface {
 }
 
 type teamFactory struct {
-	conn        Conn
-	lockFactory lock.LockFactory
+	conn                Conn
+	lockFactory         lock.LockFactory
+	elasticsearchClient *elastic.Client
 }
 
-func NewTeamFactory(conn Conn, lockFactory lock.LockFactory) TeamFactory {
+func NewTeamFactory(conn Conn, lockFactory lock.LockFactory, elasticsearchClient *elastic.Client) TeamFactory {
 	return &teamFactory{
-		conn:        conn,
-		lockFactory: lockFactory,
+		conn:                conn,
+		lockFactory:         lockFactory,
+		elasticsearchClient: elasticsearchClient,
 	}
 }
 

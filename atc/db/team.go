@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/olivere/elastic/v7"
 	"strconv"
 	"strings"
 	"time"
@@ -81,9 +82,10 @@ type Team interface {
 }
 
 type team struct {
-	id          int
-	conn        Conn
-	lockFactory lock.LockFactory
+	id                  int
+	conn                Conn
+	lockFactory         lock.LockFactory
+	elasticsearchClient *elastic.Client
 
 	name  string
 	admin bool
@@ -624,7 +626,7 @@ func (t *team) SavePipeline(
 		return nil, false, err
 	}
 
-	pipeline := newPipeline(t.conn, t.lockFactory)
+	pipeline := newPipeline(t.conn, t.lockFactory, t.elasticsearchClient)
 
 	err = scanPipeline(
 		pipeline,
@@ -665,7 +667,7 @@ func (t *team) RenamePipeline(oldName, newName string) (bool, error) {
 }
 
 func (t *team) Pipeline(pipelineRef atc.PipelineRef) (Pipeline, bool, error) {
-	pipeline := newPipeline(t.conn, t.lockFactory)
+	pipeline := newPipeline(t.conn, t.lockFactory, nil)
 
 	var instanceVars sql.NullString
 	if pipelineRef.InstanceVars != nil {
@@ -831,7 +833,7 @@ func (t *team) CreateOneOffBuild() (Build, error) {
 
 	defer Rollback(tx)
 
-	build := newEmptyBuild(t.conn, t.lockFactory)
+	build := newEmptyBuild(t.conn, t.lockFactory, t.elasticsearchClient)
 	err = createBuild(tx, build, map[string]interface{}{
 		"name":    sq.Expr("nextval('one_off_name')"),
 		"team_id": t.id,
@@ -867,7 +869,7 @@ func (t *team) CreateStartedBuild(plan atc.Plan) (Build, error) {
 		return nil, err
 	}
 
-	build := newEmptyBuild(t.conn, t.lockFactory)
+	build := newEmptyBuild(t.conn, t.lockFactory, t.elasticsearchClient)
 	err = createBuild(tx, build, map[string]interface{}{
 		"name":         sq.Expr("nextval('one_off_name')"),
 		"team_id":      t.id,
@@ -1403,7 +1405,7 @@ func scanPipelines(conn Conn, lockFactory lock.LockFactory, rows *sql.Rows) ([]P
 	pipelines := []Pipeline{}
 
 	for rows.Next() {
-		pipeline := newPipeline(conn, lockFactory)
+		pipeline := newPipeline(conn, lockFactory, nil)
 
 		err := scanPipeline(pipeline, rows)
 		if err != nil {

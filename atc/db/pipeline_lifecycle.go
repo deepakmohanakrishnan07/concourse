@@ -1,8 +1,10 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"github.com/olivere/elastic/v7"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -14,16 +16,18 @@ type PipelineLifecycle interface {
 	RemoveBuildEventsForDeletedPipelines() error
 }
 
-func NewPipelineLifecycle(conn Conn, lockFactory lock.LockFactory) PipelineLifecycle {
+func NewPipelineLifecycle(conn Conn, lockFactory lock.LockFactory, elasticsearchClient *elastic.Client) PipelineLifecycle {
 	return &pipelineLifecycle{
-		conn:        conn,
-		lockFactory: lockFactory,
+		conn:                conn,
+		lockFactory:         lockFactory,
+		elasticsearchClient: elasticsearchClient,
 	}
 }
 
 type pipelineLifecycle struct {
-	conn        Conn
-	lockFactory lock.LockFactory
+	conn                Conn
+	lockFactory         lock.LockFactory
+	elasticsearchClient *elastic.Client
 }
 
 func (pl *pipelineLifecycle) ArchiveAbandonedPipelines() error {
@@ -74,7 +78,7 @@ func (pl *pipelineLifecycle) ArchiveAbandonedPipelines() error {
 	}
 	defer pipelinesToArchive.Close()
 
-	err = archivePipelines(tx, pl.conn, pl.lockFactory, pipelinesToArchive)
+	err = archivePipelines(tx, pl.conn, pl.lockFactory, pipelinesToArchive, pl.elasticsearchClient)
 	if err != nil {
 		return err
 	}
@@ -87,10 +91,10 @@ func (pl *pipelineLifecycle) ArchiveAbandonedPipelines() error {
 	return nil
 }
 
-func archivePipelines(tx Tx, conn Conn, lockFactory lock.LockFactory, rows *sql.Rows) error {
+func archivePipelines(tx Tx, conn Conn, lockFactory lock.LockFactory, rows *sql.Rows, elasticsearchClient *elastic.Client) error {
 	var toArchive []pipeline
 	for rows.Next() {
-		p := newPipeline(conn, lockFactory)
+		p := newPipeline(conn, lockFactory, elasticsearchClient)
 		if err := scanPipeline(p, rows); err != nil {
 			return err
 		}
@@ -133,6 +137,10 @@ func (p *pipelineLifecycle) RemoveBuildEventsForDeletedPipelines() error {
 	}
 
 	for _, id := range idsToDelete {
+		_, err = p.elasticsearchClient.
+			DeleteByQuery(indexPatternPrefix).
+			Query(elastic.NewTermQuery("pipeline_id", id)).
+			Do(context.Background())
 		_, err = p.conn.Exec(fmt.Sprintf("DROP TABLE IF EXISTS pipeline_build_events_%d", id))
 		if err != nil {
 			return err

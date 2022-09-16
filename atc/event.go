@@ -1,6 +1,9 @@
 package atc
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // Event represents an event emitted by a build. They are interpreted as a
 // stream to render the build's output.
@@ -29,4 +32,19 @@ type EventVersion string
 func (version EventVersion) IsCompatibleWith(other EventVersion) bool {
 	segs := strings.SplitN(string(other), ".", 2)
 	return strings.HasPrefix(string(version), segs[0]+".")
+}
+
+type EventDoc struct {
+	EventID      int              `json:"event_id"`
+	BuildID      int              `json:"build_id"`
+	BuildName    string           `json:"build_name"`
+	JobID        int              `json:"job_id"`
+	JobName      string           `json:"job_name"`
+	PipelineID   int              `json:"pipeline_id"`
+	PipelineName string           `json:"pipeline_name"`
+	TeamID       int              `json:"team_id"`
+	TeamName     string           `json:"team_name"`
+	EventType    EventType        `json:"event"`
+	Version      EventVersion     `json:"version"`
+	Data         *json.RawMessage `json:"data"`
 }

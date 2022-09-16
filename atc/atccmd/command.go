@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/olivere/elastic/v7"
 	"io/ioutil"
 	"net"
 	"net/http"
@@ -106,6 +107,12 @@ type ATCCommand struct {
 	Migration  Migration  `command:"migrate"`
 }
 
+type ElasticSearchConfig struct {
+	Url      flag.URL `long:"url" description:"The Elasticsearch cluster URL for build event log storage"`
+	User     string   `long:"user"     description:"The Elasticsearch user to sign in as."`
+	Password string   `long:"password" description:"The Elasticsearch user's password."`
+}
+
 type RunCommand struct {
 	Logger flag.Lager
 
@@ -126,7 +133,8 @@ type RunCommand struct {
 
 	ExternalURL flag.URL `long:"external-url" description:"URL used to reach any ATC from the outside world."`
 
-	Postgres flag.PostgresConfig `group:"PostgreSQL Configuration" namespace:"postgres"`
+	Postgres      flag.PostgresConfig `group:"PostgreSQL Configuration" namespace:"postgres"`
+	ElasticSearch ElasticSearchConfig `group:"ElasticSearch Configuration" namespace:"elasticsearch"`
 
 	ConcurrentRequestLimits   map[wrappa.LimitedRoute]int `long:"concurrent-request-limit" description:"Limit the number of concurrent requests to an API endpoint (Example: ListAllJobs:5)"`
 	APIMaxOpenConnections     int                         `long:"api-max-conns" description:"The maximum number of open connections for the api connection pool." default:"10"`
@@ -627,6 +635,11 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 		return nil, err
 	}
 
+	elasticsearchClient, err := NewElasticSearchClient(cmd.ElasticSearch)
+	if err != nil {
+		return nil, err
+	}
+
 	secretManager, err := cmd.secretManager(logger)
 	if err != nil {
 		return nil, err
@@ -640,7 +653,7 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 		clock.NewClock(),
 	)
 
-	members, err := cmd.constructMembers(logger, reconfigurableSink, apiConn, workerConn, backendConn, gcConn, storage, lockFactory, secretManager)
+	members, err := cmd.constructMembers(logger, reconfigurableSink, apiConn, workerConn, backendConn, gcConn, storage, lockFactory, secretManager, elasticsearchClient)
 	if err != nil {
 		return nil, err
 	}
@@ -690,6 +703,7 @@ func (cmd *RunCommand) constructMembers(
 	storage storage.Storage,
 	lockFactory lock.LockFactory,
 	secretManager creds.Secrets,
+	elasticsearchClient *elastic.Client,
 ) ([]grouper.Member, error) {
 	if cmd.TelemetryOptIn {
 		url := fmt.Sprintf("http://telemetry.concourse-ci.org/?version=%s", concourse.Version)
@@ -711,17 +725,17 @@ func (cmd *RunCommand) constructMembers(
 		return nil, err
 	}
 	checkBuildsChan := make(chan db.Build, 2000)
-	apiMembers, err := cmd.constructAPIMembers(logger, reconfigurableSink, apiConn, workerConn, storage, lockFactory, secretManager, policyChecker, workerCache, checkBuildsChan)
+	apiMembers, err := cmd.constructAPIMembers(logger, reconfigurableSink, apiConn, workerConn, storage, lockFactory, secretManager, policyChecker, workerCache, checkBuildsChan, elasticsearchClient)
 	if err != nil {
 		return nil, err
 	}
 
-	backendComponents, err := cmd.backendComponents(logger, backendConn, lockFactory, secretManager, policyChecker, workerCache, checkBuildsChan)
+	backendComponents, err := cmd.backendComponents(logger, backendConn, lockFactory, secretManager, policyChecker, workerCache, checkBuildsChan, elasticsearchClient)
 	if err != nil {
 		return nil, err
 	}
 
-	gcComponents, err := cmd.gcComponents(logger, gcConn, lockFactory)
+	gcComponents, err := cmd.gcComponents(logger, gcConn, lockFactory, elasticsearchClient)
 	if err != nil {
 		return nil, err
 	}
@@ -781,6 +795,7 @@ func (cmd *RunCommand) constructAPIMembers(
 	policyChecker policy.Checker,
 	workerCache *db.WorkerCache,
 	checkBuildsChan chan db.Build,
+	elasticsearchClient *elastic.Client,
 ) ([]grouper.Member, error) {
 
 	httpClient, err := cmd.skyHttpClient()
@@ -788,8 +803,8 @@ func (cmd *RunCommand) constructAPIMembers(
 		return nil, err
 	}
 
-	teamFactory := db.NewTeamFactory(dbConn, lockFactory)
-	workerTeamFactory := db.NewTeamFactory(workerConn, lockFactory)
+	teamFactory := db.NewTeamFactory(dbConn, lockFactory, elasticsearchClient)
+	workerTeamFactory := db.NewTeamFactory(workerConn, lockFactory, elasticsearchClient)
 
 	_, err = teamFactory.CreateDefaultTeamIfNotExists()
 	if err != nil {
@@ -820,7 +835,7 @@ func (cmd *RunCommand) constructAPIMembers(
 	dbContainerRepository := db.NewContainerRepository(dbConn)
 	dbVolumeRepository := db.NewVolumeRepository(dbConn)
 	gcContainerDestroyer := gc.NewDestroyer(logger, dbContainerRepository, dbVolumeRepository)
-	dbBuildFactory := db.NewBuildFactory(dbConn, lockFactory, cmd.GC.OneOffBuildGracePeriod, cmd.GC.FailedGracePeriod)
+	dbBuildFactory := db.NewBuildFactory(dbConn, lockFactory, cmd.GC.OneOffBuildGracePeriod, cmd.GC.FailedGracePeriod, elasticsearchClient)
 	dbCheckFactory := db.NewCheckFactory(dbConn, lockFactory, secretManager, cmd.varSourcePool, checkBuildsChan, nil)
 	dbAccessTokenFactory := db.NewAccessTokenFactory(dbConn)
 	dbClock := db.NewClock()
@@ -1003,6 +1018,7 @@ func (cmd *RunCommand) backendComponents(
 	policyChecker policy.Checker,
 	workerCache *db.WorkerCache,
 	checkBuildsChan chan db.Build,
+	elasticsearchClient *elastic.Client,
 ) ([]RunnableComponent, error) {
 
 	if cmd.Syslog.Address != "" && cmd.Syslog.Transport == "" {
@@ -1014,16 +1030,16 @@ func (cmd *RunCommand) backendComponents(
 		syslogDrainConfigured = false
 	}
 
-	teamFactory := db.NewTeamFactory(dbConn, lockFactory)
+	teamFactory := db.NewTeamFactory(dbConn, lockFactory, elasticsearchClient)
 
 	dbResourceCacheFactory := db.NewResourceCacheFactory(dbConn, lockFactory)
 	dbResourceConfigFactory := db.NewResourceConfigFactory(dbConn, lockFactory)
 
-	dbBuildFactory := db.NewBuildFactory(dbConn, lockFactory, cmd.GC.OneOffBuildGracePeriod, cmd.GC.FailedGracePeriod)
+	dbBuildFactory := db.NewBuildFactory(dbConn, lockFactory, cmd.GC.OneOffBuildGracePeriod, cmd.GC.FailedGracePeriod, elasticsearchClient)
 	dbCheckFactory := db.NewCheckFactory(dbConn, lockFactory, secretManager, cmd.varSourcePool, checkBuildsChan, util.NewSequenceGenerator(1))
 	dbPipelineFactory := db.NewPipelineFactory(dbConn, lockFactory)
 	dbJobFactory := db.NewJobFactory(dbConn, lockFactory)
-	dbPipelineLifecycle := db.NewPipelineLifecycle(dbConn, lockFactory)
+	dbPipelineLifecycle := db.NewPipelineLifecycle(dbConn, lockFactory, elasticsearchClient)
 	dbPipelinePauser := db.NewPipelinePauser(dbConn, lockFactory)
 
 	dbWorkerFactory := db.NewWorkerFactory(dbConn, workerCache)
@@ -1190,7 +1206,7 @@ func (cmd *RunCommand) constructPool(dbConn db.Conn, lockFactory lock.LockFactor
 	dbWorkerTaskCacheFactory := db.NewWorkerTaskCacheFactory(dbConn)
 	dbVolumeRepository := db.NewVolumeRepository(dbConn)
 	dbWorkerFactory := db.NewWorkerFactory(dbConn, workerCache)
-	dbTeamFactory := db.NewTeamFactory(dbConn, lockFactory)
+	dbTeamFactory := db.NewTeamFactory(dbConn, lockFactory, nil)
 
 	workerVersion, err := workerVersion()
 	if err != nil {
@@ -1225,6 +1241,7 @@ func (cmd *RunCommand) gcComponents(
 	logger lager.Logger,
 	gcConn db.Conn,
 	lockFactory lock.LockFactory,
+	elasticsearchClient *elastic.Client,
 ) ([]RunnableComponent, error) {
 	dbWorkerLifecycle := db.NewWorkerLifecycle(gcConn)
 	dbResourceCacheLifecycle := db.NewResourceCacheLifecycle(gcConn)
@@ -1233,9 +1250,9 @@ func (cmd *RunCommand) gcComponents(
 	dbArtifactLifecycle := db.NewArtifactLifecycle(gcConn)
 	dbAccessTokenLifecycle := db.NewAccessTokenLifecycle(gcConn)
 	resourceConfigCheckSessionLifecycle := db.NewResourceConfigCheckSessionLifecycle(gcConn)
-	dbBuildFactory := db.NewBuildFactory(gcConn, lockFactory, cmd.GC.OneOffBuildGracePeriod, cmd.GC.FailedGracePeriod)
+	dbBuildFactory := db.NewBuildFactory(gcConn, lockFactory, cmd.GC.OneOffBuildGracePeriod, cmd.GC.FailedGracePeriod, elasticsearchClient)
 	dbResourceConfigFactory := db.NewResourceConfigFactory(gcConn, lockFactory)
-	dbPipelineLifecycle := db.NewPipelineLifecycle(gcConn, lockFactory)
+	dbPipelineLifecycle := db.NewPipelineLifecycle(gcConn, lockFactory, elasticsearchClient)
 	dbCheckLifecycle := db.NewCheckLifecycle(gcConn)
 
 	dbVolumeRepository := db.NewVolumeRepository(gcConn)
@@ -2054,4 +2071,14 @@ type RunnableComponent struct {
 
 func (cmd *RunCommand) isMTLSEnabled() bool {
 	return string(cmd.TLSCaCert) != ""
+}
+
+func NewElasticSearchClient(config ElasticSearchConfig) (*elastic.Client, error) {
+	return elastic.NewClient(
+		elastic.SetURL(config.User),
+		elastic.SetURL(config.User, config.Password),
+		elastic.SetHealthcheck(true),
+		elastic.SetHealthcheckTimeoutStartup(1*time.Minute),
+		elastic.SetHealthcheckTimeout(5*time.Second),
+	)
 }

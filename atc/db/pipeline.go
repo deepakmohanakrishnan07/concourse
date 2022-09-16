@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/olivere/elastic/v7"
 	"strconv"
 	"strings"
 	"time"
@@ -148,8 +149,9 @@ type pipeline struct {
 	archived      bool
 	lastUpdated   time.Time
 
-	conn        Conn
-	lockFactory lock.LockFactory
+	conn                Conn
+	lockFactory         lock.LockFactory
+	elasticsearchClient *elastic.Client
 }
 
 // ConfigVersion is a sequence identifier used for compare-and-swap.
@@ -177,10 +179,11 @@ var pipelinesQuery = psql.Select(`
 	From("pipelines p").
 	LeftJoin("teams t ON p.team_id = t.id")
 
-func newPipeline(conn Conn, lockFactory lock.LockFactory) *pipeline {
+func newPipeline(conn Conn, lockFactory lock.LockFactory, elasticsearchClient *elastic.Client) *pipeline {
 	return &pipeline{
-		conn:        conn,
-		lockFactory: lockFactory,
+		conn:                conn,
+		lockFactory:         lockFactory,
+		elasticsearchClient: elasticsearchClient,
 	}
 }
 
@@ -298,7 +301,7 @@ func (p *pipeline) CreateJobBuild(jobName string) (Build, error) {
 		return nil, err
 	}
 
-	build := newEmptyBuild(p.conn, p.lockFactory)
+	build := newEmptyBuild(p.conn, p.lockFactory, p.elasticsearchClient)
 	err = scanBuild(build, buildsQuery.
 		Where(sq.Eq{"b.id": buildID}).
 		RunWith(tx).
@@ -383,7 +386,7 @@ func (p *pipeline) GetBuildsWithVersionAsInput(resourceID, resourceConfigVersion
 
 	builds := []Build{}
 	for rows.Next() {
-		build := newEmptyBuild(p.conn, p.lockFactory)
+		build := newEmptyBuild(p.conn, p.lockFactory, p.elasticsearchClient)
 		err = scanBuild(build, rows, p.conn.EncryptionStrategy())
 		if err != nil {
 			return nil, err
@@ -411,7 +414,7 @@ func (p *pipeline) GetBuildsWithVersionAsOutput(resourceID, resourceConfigVersio
 
 	builds := []Build{}
 	for rows.Next() {
-		build := newEmptyBuild(p.conn, p.lockFactory)
+		build := newEmptyBuild(p.conn, p.lockFactory, p.elasticsearchClient)
 		err = scanBuild(build, rows, p.conn.EncryptionStrategy())
 		if err != nil {
 			return nil, err
@@ -1043,7 +1046,7 @@ func (p *pipeline) CreateOneOffBuild() (Build, error) {
 
 	defer Rollback(tx)
 
-	build := newEmptyBuild(p.conn, p.lockFactory)
+	build := newEmptyBuild(p.conn, p.lockFactory, p.elasticsearchClient)
 	err = createBuild(tx, build, map[string]interface{}{
 		"name":        sq.Expr("nextval('one_off_name')"),
 		"pipeline_id": p.id,
@@ -1080,7 +1083,7 @@ func (p *pipeline) CreateStartedBuild(plan atc.Plan) (Build, error) {
 		return nil, err
 	}
 
-	build := newEmptyBuild(p.conn, p.lockFactory)
+	build := newEmptyBuild(p.conn, p.lockFactory, p.elasticsearchClient)
 	err = createBuild(tx, build, map[string]interface{}{
 		"name":         sq.Expr("nextval('one_off_name')"),
 		"pipeline_id":  p.id,
