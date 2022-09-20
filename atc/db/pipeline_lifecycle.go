@@ -138,7 +138,7 @@ func (p *pipelineLifecycle) RemoveBuildEventsForDeletedPipelines() error {
 
 	for _, id := range idsToDelete {
 		_, err = p.elasticsearchClient.
-			DeleteByQuery(indexPatternPrefix).
+			DeleteByQuery(indexPatternName).
 			Query(elastic.NewTermQuery("pipeline_id", id)).
 			Do(context.Background())
 		_, err = p.conn.Exec(fmt.Sprintf("DROP TABLE IF EXISTS pipeline_build_events_%d", id))

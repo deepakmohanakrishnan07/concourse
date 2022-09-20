@@ -10,11 +10,22 @@ services:
       POSTGRES_USER: dev
       POSTGRES_PASSWORD: dev
 
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch-oss:7.10.2
+    container_name: elasticsearch
+    ports: [9200:9200]
+    environment:
+      - node.name=elasticsearch
+      - cluster.name=concourse-backend
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms256m -Xmx256m"
+
   web:
     build: .
     image: concourse/concourse:local
     command: web
-    depends_on: [db]
+    depends_on: [db, elasticsearch]
     ports: [8080:8080]
     volumes:
     - .:/src
@@ -24,7 +35,7 @@ services:
       CONCOURSE_TSA_AUTHORIZED_KEYS: /concourse-keys/authorized_worker_keys
       CONCOURSE_TSA_HOST_KEY: /concourse-keys/tsa_host_key
 
-      CONCOURSE_LOG_LEVEL: debug
+      CONCOURSE_LOG_LEVEL: info
       CONCOURSE_POSTGRES_HOST: db
       CONCOURSE_POSTGRES_USER: dev
       CONCOURSE_POSTGRES_PASSWORD: dev
@@ -37,6 +48,12 @@ services:
       CONCOURSE_ENABLE_ACROSS_STEP: "true"
       CONCOURSE_ENABLE_CACHE_STREAMED_VOLUMES: "true"
       CONCOURSE_ENABLE_RESOURCE_CAUSALITY: "true"
+      CONCOURSE_ELASTICSEARCH_URL: http://elasticsearch:9200
+      CONCOURSE_ELASTICSEARCH_USER: "admin"
+      CONCOURSE_ELASTICSEARCH_PASSWORD: "admin"
+    links:
+        - db
+        - elasticsearch
 
   worker:
     build: .

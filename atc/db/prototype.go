@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"github.com/olivere/elastic/v7"
 	"strconv"
 	"time"
 
@@ -147,8 +148,8 @@ func (p *prototype) CurrentPinnedVersion() atc.Version { return nil }
 
 func (p *prototype) HasWebhook() bool { return false }
 
-func newEmptyPrototype(conn Conn, lockFactory lock.LockFactory) *prototype {
-	return &prototype{pipelineRef: pipelineRef{conn: conn, lockFactory: lockFactory}}
+func newEmptyPrototype(conn Conn, lockFactory lock.LockFactory, client *elastic.Client) *prototype {
+	return &prototype{pipelineRef: pipelineRef{conn: conn, lockFactory: lockFactory, elasticsearchClient: client}}
 }
 
 func (p *prototype) Reload() (bool, error) {
@@ -213,7 +214,7 @@ func (p *prototype) CreateBuild(ctx context.Context, manuallyTriggered bool, pla
 
 	defer Rollback(tx)
 
-	build := newEmptyBuild(p.conn, p.lockFactory)
+	build := newEmptyBuild(p.conn, p.lockFactory, p.elasticsearchClient)
 	err = createStartedBuild(tx, build, startedBuildArgs{
 		Name:              CheckBuildName,
 		PipelineID:        p.pipelineID,

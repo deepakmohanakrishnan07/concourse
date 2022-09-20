@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/olivere/elastic/v7"
 	"strconv"
 	"time"
 
@@ -210,8 +211,8 @@ func (t *resourceType) ResourceConfigScopeID() int        { return t.resourceCon
 func (t *resourceType) CurrentPinnedVersion() atc.Version { return nil }
 func (t *resourceType) HasWebhook() bool                  { return false }
 
-func newEmptyResourceType(conn Conn, lockFactory lock.LockFactory) *resourceType {
-	return &resourceType{pipelineRef: pipelineRef{conn: conn, lockFactory: lockFactory}}
+func newEmptyResourceType(conn Conn, lockFactory lock.LockFactory, elasticsearchClient *elastic.Client) *resourceType {
+	return &resourceType{pipelineRef: pipelineRef{conn: conn, lockFactory: lockFactory, elasticsearchClient: elasticsearchClient}}
 }
 
 func (t *resourceType) Reload() (bool, error) {
@@ -294,7 +295,7 @@ func (r *resourceType) CreateBuild(ctx context.Context, manuallyTriggered bool, 
 		}
 	}
 
-	build := newEmptyBuild(r.conn, r.lockFactory)
+	build := newEmptyBuild(r.conn, r.lockFactory, r.elasticsearchClient)
 	err = createStartedBuild(tx, build, startedBuildArgs{
 		Name:              CheckBuildName,
 		PipelineID:        r.pipelineID,

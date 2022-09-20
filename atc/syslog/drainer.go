@@ -265,7 +265,7 @@ func (d *drainer) sendEvent(logger lager.Logger, build db.Build, syslog *Syslog,
 	}
 
 	if message != "" {
-		err := syslog.Write(hostname, tag, ts, message, ev.EventID)
+		err := syslog.Write(hostname, tag, ts, message, string(ev.EventID))
 		if err != nil {
 			logger.Error("failed-to-write-to-server", err)
 			return err

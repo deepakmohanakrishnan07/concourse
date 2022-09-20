@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/olivere/elastic/v7"
 	"strconv"
 	"time"
 
@@ -185,8 +186,8 @@ type resource struct {
 	buildSummary          *atc.BuildSummary
 }
 
-func newEmptyResource(conn Conn, lockFactory lock.LockFactory) *resource {
-	return &resource{pipelineRef: pipelineRef{conn: conn, lockFactory: lockFactory}}
+func newEmptyResource(conn Conn, lockFactory lock.LockFactory, elasticsearchClient *elastic.Client) *resource {
+	return &resource{pipelineRef: pipelineRef{conn: conn, lockFactory: lockFactory, elasticsearchClient: elasticsearchClient}}
 }
 
 type ResourceNotFoundError struct {
@@ -358,7 +359,7 @@ func (r *resource) CreateBuild(ctx context.Context, manuallyTriggered bool, plan
 		}
 	}
 
-	build := newEmptyBuild(r.conn, r.lockFactory)
+	build := newEmptyBuild(r.conn, r.lockFactory, r.elasticsearchClient)
 	err = createStartedBuild(tx, build, startedBuildArgs{
 		Name:              CheckBuildName,
 		PipelineID:        r.pipelineID,

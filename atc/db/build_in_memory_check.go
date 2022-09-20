@@ -1,10 +1,12 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/olivere/elastic/v7"
 	"strconv"
 	"strings"
 	"time"
@@ -37,13 +39,15 @@ type inMemoryCheckBuildForApi struct {
 	conn Conn
 
 	cacheAssociatedTeams []string
+	elasticsearchClient  *elastic.Client
 }
 
-func newExistingInMemoryCheckBuildForApi(conn Conn, buildId int, checkable Checkable) (*inMemoryCheckBuildForApi, error) {
+func newExistingInMemoryCheckBuildForApi(conn Conn, buildId int, checkable Checkable, elasticsearchClient *elastic.Client) (*inMemoryCheckBuildForApi, error) {
 	build := inMemoryCheckBuildForApi{
-		id:        buildId,
-		conn:      conn,
-		checkable: checkable,
+		id:                  buildId,
+		conn:                conn,
+		checkable:           checkable,
+		elasticsearchClient: elasticsearchClient,
 	}
 
 	if resource, ok := checkable.(Resource); ok {
@@ -183,6 +187,7 @@ func (b *inMemoryCheckBuildForApi) Events(from uint) (EventSource, error) {
 	}
 
 	return newBuildEventSource(
+		context.Background(),
 		b.id,
 		"check_build_events",
 		b.conn,
@@ -230,6 +235,7 @@ func (b *inMemoryCheckBuildForApi) Events(from uint) (EventSource, error) {
 
 			return completed, nil
 		},
+		nil,
 	), nil
 }
 

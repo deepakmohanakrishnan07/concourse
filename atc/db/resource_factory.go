@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"github.com/olivere/elastic/v7"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -15,19 +16,21 @@ type ResourceFactory interface {
 }
 
 type resourceFactory struct {
-	conn        Conn
-	lockFactory lock.LockFactory
+	conn                Conn
+	lockFactory         lock.LockFactory
+	elasticsearchClient *elastic.Client
 }
 
-func NewResourceFactory(conn Conn, lockFactory lock.LockFactory) ResourceFactory {
+func NewResourceFactory(conn Conn, lockFactory lock.LockFactory, elasticsearchClient *elastic.Client) ResourceFactory {
 	return &resourceFactory{
-		conn:        conn,
-		lockFactory: lockFactory,
+		conn:                conn,
+		lockFactory:         lockFactory,
+		elasticsearchClient: elasticsearchClient,
 	}
 }
 
 func (r *resourceFactory) Resource(resourceID int) (Resource, bool, error) {
-	resource := newEmptyResource(r.conn, r.lockFactory)
+	resource := newEmptyResource(r.conn, r.lockFactory, r.elasticsearchClient)
 	row := resourcesQuery.
 		Where(sq.Eq{"r.id": resourceID}).
 		RunWith(r.conn).
@@ -60,7 +63,7 @@ func (r *resourceFactory) VisibleResources(teamNames []string) ([]Resource, erro
 		return nil, err
 	}
 
-	return scanResources(rows, r.conn, r.lockFactory)
+	return scanResources(rows, r.conn, r.lockFactory, r.elasticsearchClient)
 }
 
 func (r *resourceFactory) AllResources() ([]Resource, error) {
@@ -72,14 +75,14 @@ func (r *resourceFactory) AllResources() ([]Resource, error) {
 		return nil, err
 	}
 
-	return scanResources(rows, r.conn, r.lockFactory)
+	return scanResources(rows, r.conn, r.lockFactory, r.elasticsearchClient)
 }
 
-func scanResources(resourceRows *sql.Rows, conn Conn, lockFactory lock.LockFactory) ([]Resource, error) {
+func scanResources(resourceRows *sql.Rows, conn Conn, lockFactory lock.LockFactory, elasticsearchClient *elastic.Client) ([]Resource, error) {
 	var resources []Resource
 
 	for resourceRows.Next() {
-		resource := newEmptyResource(conn, lockFactory)
+		resource := newEmptyResource(conn, lockFactory, elasticsearchClient)
 		err := scanResource(resource, resourceRows)
 		if err != nil {
 			return nil, err

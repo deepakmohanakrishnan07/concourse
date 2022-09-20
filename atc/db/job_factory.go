@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
+	"github.com/olivere/elastic/v7"
 	"sort"
 
 	sq "github.com/Masterminds/squirrel"
@@ -24,14 +25,16 @@ type JobFactory interface {
 }
 
 type jobFactory struct {
-	conn        Conn
-	lockFactory lock.LockFactory
+	conn                Conn
+	lockFactory         lock.LockFactory
+	elasticsearchClient *elastic.Client
 }
 
-func NewJobFactory(conn Conn, lockFactory lock.LockFactory) JobFactory {
+func NewJobFactory(conn Conn, lockFactory lock.LockFactory, elasticsearchClient *elastic.Client) JobFactory {
 	return &jobFactory{
-		conn:        conn,
-		lockFactory: lockFactory,
+		conn:                conn,
+		lockFactory:         lockFactory,
+		elasticsearchClient: elasticsearchClient,
 	}
 }
 
@@ -96,7 +99,7 @@ func (j *jobFactory) JobsToSchedule() (SchedulerJobs, error) {
 		return nil, err
 	}
 
-	jobs, err := scanJobs(j.conn, j.lockFactory, rows)
+	jobs, err := scanJobs(j.conn, j.lockFactory, rows, j.elasticsearchClient)
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +173,7 @@ func (j *jobFactory) JobsToSchedule() (SchedulerJobs, error) {
 			defer Close(rows)
 
 			for rows.Next() {
-				resourceType := newEmptyResourceType(j.conn, j.lockFactory)
+				resourceType := newEmptyResourceType(j.conn, j.lockFactory, j.elasticsearchClient)
 				err := scanResourceType(resourceType, rows)
 				if err != nil {
 					return nil, err
@@ -196,7 +199,7 @@ func (j *jobFactory) JobsToSchedule() (SchedulerJobs, error) {
 			defer Close(rows)
 
 			for rows.Next() {
-				prototype := newEmptyPrototype(j.conn, j.lockFactory)
+				prototype := newEmptyPrototype(j.conn, j.lockFactory, j.elasticsearchClient)
 				err := scanPrototype(prototype, rows)
 				if err != nil {
 					return nil, err

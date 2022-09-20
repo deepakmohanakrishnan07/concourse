@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"github.com/olivere/elastic/v7"
 	"time"
 
 	"code.cloudfoundry.org/lager/lagerctx"
@@ -52,8 +53,9 @@ type checkFactory struct {
 
 	planFactory atc.PlanFactory
 
-	checkBuildChan    chan<- Build
-	sequenceGenerator util.SequenceGenerator
+	checkBuildChan      chan<- Build
+	sequenceGenerator   util.SequenceGenerator
+	elasticsearchClient *elastic.Client
 }
 
 func NewCheckFactory(
@@ -63,6 +65,7 @@ func NewCheckFactory(
 	varSourcePool creds.VarSourcePool,
 	checkBuildChan chan<- Build,
 	sequenceGenerator util.SequenceGenerator,
+	elasticsearchClient *elastic.Client,
 ) CheckFactory {
 	return &checkFactory{
 		conn:        conn,
@@ -75,6 +78,8 @@ func NewCheckFactory(
 
 		checkBuildChan:    checkBuildChan,
 		sequenceGenerator: sequenceGenerator,
+
+		elasticsearchClient: elasticsearchClient,
 	}
 }
 
@@ -173,7 +178,7 @@ func (c *checkFactory) Resources() ([]Resource, error) {
 	defer Close(rows)
 
 	for rows.Next() {
-		r := newEmptyResource(c.conn, c.lockFactory)
+		r := newEmptyResource(c.conn, c.lockFactory, c.elasticsearchClient)
 		err = scanResource(r, rows)
 		if err != nil {
 			return nil, err
@@ -203,7 +208,7 @@ func (c *checkFactory) ResourceTypesByPipeline() (map[int]ResourceTypes, error) 
 	defer Close(rows)
 
 	for rows.Next() {
-		r := newEmptyResourceType(c.conn, c.lockFactory)
+		r := newEmptyResourceType(c.conn, c.lockFactory, c.elasticsearchClient)
 		err = scanResourceType(r, rows)
 		if err != nil {
 			return nil, err

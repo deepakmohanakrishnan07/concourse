@@ -122,7 +122,7 @@ func (f *buildFactory) BuildForAPI(buildID int) (BuildForAPI, bool, error) {
 				return nil, false, nil
 			}
 
-			build, err := newExistingInMemoryCheckBuildForApi(f.conn, buildID, resource)
+			build, err := newExistingInMemoryCheckBuildForApi(f.conn, buildID, resource, f.elasticsearchClient)
 			if err != nil {
 				return nil, false, err
 			}
@@ -164,25 +164,25 @@ func (f *buildFactory) VisibleBuilds(teamNames []string, page Page) ([]BuildForA
 
 	if page.UseDate {
 		return getBuildsWithDates(newBuildsQuery, minMaxIdQuery, page, f.conn,
-			f.lockFactory)
+			f.lockFactory, f.elasticsearchClient)
 	}
 	return getBuildsWithPagination(newBuildsQuery, minMaxIdQuery, page, f.conn,
-		f.lockFactory, false)
+		f.lockFactory, false, f.elasticsearchClient)
 }
 
 func (f *buildFactory) AllBuilds(page Page) ([]BuildForAPI, Pagination, error) {
 	if page.UseDate {
 		return getBuildsWithDates(buildsQuery, minMaxIdQuery, page, f.conn,
-			f.lockFactory)
+			f.lockFactory, f.elasticsearchClient)
 	}
 	return getBuildsWithPagination(buildsQuery, minMaxIdQuery,
-		page, f.conn, f.lockFactory, false)
+		page, f.conn, f.lockFactory, false, f.elasticsearchClient)
 }
 
 func (f *buildFactory) PublicBuilds(page Page) ([]BuildForAPI, Pagination, error) {
 	return getBuildsWithPagination(
 		buildsQuery.Where(sq.Eq{"p.public": true}), minMaxIdQuery,
-		page, f.conn, f.lockFactory, false)
+		page, f.conn, f.lockFactory, false, f.elasticsearchClient)
 }
 
 func (f *buildFactory) MarkNonInterceptibleBuilds() error {
@@ -223,7 +223,7 @@ func (f *buildFactory) GetDrainableBuilds() ([]Build, error) {
 			"b.resource_type_id": nil,
 		})
 
-	return getBuilds(query, f.conn, f.lockFactory)
+	return getBuilds(query, f.conn, f.lockFactory, f.elasticsearchClient)
 }
 
 func (f *buildFactory) GetAllStartedBuilds() ([]Build, error) {
@@ -231,11 +231,11 @@ func (f *buildFactory) GetAllStartedBuilds() ([]Build, error) {
 		"b.status": BuildStatusStarted,
 	})
 
-	return getBuilds(query, f.conn, f.lockFactory)
+	return getBuilds(query, f.conn, f.lockFactory, f.elasticsearchClient)
 }
 
 func (f *buildFactory) findResourceOfInMemoryCheckBuild(buildId int) (Resource, bool, error) {
-	resource := newEmptyResource(f.conn, f.lockFactory)
+	resource := newEmptyResource(f.conn, f.lockFactory, f.elasticsearchClient)
 	row := resourcesQuery.
 		Where(sq.Or{
 			sq.Eq{"r.in_memory_build_id": buildId},
@@ -254,7 +254,7 @@ func (f *buildFactory) findResourceOfInMemoryCheckBuild(buildId int) (Resource, 
 	return resource, true, nil
 }
 
-func getBuilds(buildsQuery sq.SelectBuilder, conn Conn, lockFactory lock.LockFactory) ([]Build, error) {
+func getBuilds(buildsQuery sq.SelectBuilder, conn Conn, lockFactory lock.LockFactory, elasticsearchClient *elastic.Client) ([]Build, error) {
 	rows, err := buildsQuery.RunWith(conn).Query()
 	if err != nil {
 		return nil, err
@@ -265,7 +265,7 @@ func getBuilds(buildsQuery sq.SelectBuilder, conn Conn, lockFactory lock.LockFac
 	bs := []Build{}
 
 	for rows.Next() {
-		b := newEmptyBuild(conn, lockFactory, nil)
+		b := newEmptyBuild(conn, lockFactory, elasticsearchClient)
 		err := scanBuild(b, rows, conn.EncryptionStrategy())
 		if err != nil {
 			return nil, err
@@ -277,7 +277,7 @@ func getBuilds(buildsQuery sq.SelectBuilder, conn Conn, lockFactory lock.LockFac
 	return bs, nil
 }
 
-func getBuildsWithDates(buildsQuery, minMaxIdQuery sq.SelectBuilder, page Page, conn Conn, lockFactory lock.LockFactory) ([]BuildForAPI, Pagination, error) {
+func getBuildsWithDates(buildsQuery, minMaxIdQuery sq.SelectBuilder, page Page, conn Conn, lockFactory lock.LockFactory, elasticsearchClient *elastic.Client) ([]BuildForAPI, Pagination, error) {
 	var newPage = Page{Limit: page.Limit}
 
 	tx, err := conn.Begin()
@@ -309,7 +309,7 @@ func getBuildsWithDates(buildsQuery, minMaxIdQuery sq.SelectBuilder, page Page, 
 		found := false
 		for fromRow.Next() {
 			found = true
-			build := newEmptyBuild(conn, lockFactory, nil)
+			build := newEmptyBuild(conn, lockFactory, elasticsearchClient)
 			err = scanBuild(build, fromRow, conn.EncryptionStrategy())
 			if err != nil {
 				return nil, Pagination{}, err
@@ -341,7 +341,7 @@ func getBuildsWithDates(buildsQuery, minMaxIdQuery sq.SelectBuilder, page Page, 
 		found := false
 		for untilRow.Next() {
 			found = true
-			build := newEmptyBuild(conn, lockFactory, nil)
+			build := newEmptyBuild(conn, lockFactory, elasticsearchClient)
 			err = scanBuild(build, untilRow, conn.EncryptionStrategy())
 			if err != nil {
 				return nil, Pagination{}, err
@@ -359,10 +359,10 @@ func getBuildsWithDates(buildsQuery, minMaxIdQuery sq.SelectBuilder, page Page, 
 		return nil, Pagination{}, err
 	}
 
-	return getBuildsWithPagination(buildsQuery, minMaxIdQuery, newPage, conn, lockFactory, false)
+	return getBuildsWithPagination(buildsQuery, minMaxIdQuery, newPage, conn, lockFactory, false, elasticsearchClient)
 }
 
-func getBuildsWithPagination(buildsQuery, minMaxIdQuery sq.SelectBuilder, page Page, conn Conn, lockFactory lock.LockFactory, chronological bool) ([]BuildForAPI, Pagination, error) {
+func getBuildsWithPagination(buildsQuery, minMaxIdQuery sq.SelectBuilder, page Page, conn Conn, lockFactory lock.LockFactory, chronological bool, elasticsearchClient *elastic.Client) ([]BuildForAPI, Pagination, error) {
 	var (
 		rows    *sql.Rows
 		err     error
@@ -421,7 +421,7 @@ func getBuildsWithPagination(buildsQuery, minMaxIdQuery sq.SelectBuilder, page P
 
 	builds := make([]BuildForAPI, 0)
 	for rows.Next() {
-		build := newEmptyBuild(conn, lockFactory, nil)
+		build := newEmptyBuild(conn, lockFactory, elasticsearchClient)
 		err = scanBuild(build, rows, conn.EncryptionStrategy())
 		if err != nil {
 			return nil, Pagination{}, err
@@ -452,7 +452,7 @@ func getBuildsWithPagination(buildsQuery, minMaxIdQuery sq.SelectBuilder, page P
 		RunWith(tx).
 		QueryRow()
 
-	build := newEmptyBuild(conn, lockFactory, nil)
+	build := newEmptyBuild(conn, lockFactory, elasticsearchClient)
 	err = scanBuild(build, row, conn.EncryptionStrategy())
 	if err != nil && err != sql.ErrNoRows {
 		return builds, Pagination{}, err
@@ -470,7 +470,7 @@ func getBuildsWithPagination(buildsQuery, minMaxIdQuery sq.SelectBuilder, page P
 		RunWith(tx).
 		QueryRow()
 
-	build = newEmptyBuild(conn, lockFactory, nil)
+	build = newEmptyBuild(conn, lockFactory, elasticsearchClient)
 	err = scanBuild(build, row, conn.EncryptionStrategy())
 	if err != nil && err != sql.ErrNoRows {
 		return builds, Pagination{}, err

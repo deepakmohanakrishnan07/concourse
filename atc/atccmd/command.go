@@ -637,6 +637,7 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 
 	elasticsearchClient, err := NewElasticSearchClient(cmd.ElasticSearch)
 	if err != nil {
+		logger.Error("es-client-error", err, lager.Data{"es-config": cmd.ElasticSearch, "es-url": cmd.ElasticSearch.Url.String()})
 		return nil, err
 	}
 
@@ -830,13 +831,13 @@ func (cmd *RunCommand) constructAPIMembers(
 
 	credsManagers := cmd.CredentialManagers
 	dbPipelineFactory := db.NewPipelineFactory(dbConn, lockFactory)
-	dbJobFactory := db.NewJobFactory(dbConn, lockFactory)
-	dbResourceFactory := db.NewResourceFactory(dbConn, lockFactory)
+	dbJobFactory := db.NewJobFactory(dbConn, lockFactory, elasticsearchClient)
+	dbResourceFactory := db.NewResourceFactory(dbConn, lockFactory, elasticsearchClient)
 	dbContainerRepository := db.NewContainerRepository(dbConn)
 	dbVolumeRepository := db.NewVolumeRepository(dbConn)
 	gcContainerDestroyer := gc.NewDestroyer(logger, dbContainerRepository, dbVolumeRepository)
 	dbBuildFactory := db.NewBuildFactory(dbConn, lockFactory, cmd.GC.OneOffBuildGracePeriod, cmd.GC.FailedGracePeriod, elasticsearchClient)
-	dbCheckFactory := db.NewCheckFactory(dbConn, lockFactory, secretManager, cmd.varSourcePool, checkBuildsChan, nil)
+	dbCheckFactory := db.NewCheckFactory(dbConn, lockFactory, secretManager, cmd.varSourcePool, checkBuildsChan, nil, elasticsearchClient)
 	dbAccessTokenFactory := db.NewAccessTokenFactory(dbConn)
 	dbClock := db.NewClock()
 	dbWall := db.NewWall(dbConn, &dbClock)
@@ -1036,9 +1037,9 @@ func (cmd *RunCommand) backendComponents(
 	dbResourceConfigFactory := db.NewResourceConfigFactory(dbConn, lockFactory)
 
 	dbBuildFactory := db.NewBuildFactory(dbConn, lockFactory, cmd.GC.OneOffBuildGracePeriod, cmd.GC.FailedGracePeriod, elasticsearchClient)
-	dbCheckFactory := db.NewCheckFactory(dbConn, lockFactory, secretManager, cmd.varSourcePool, checkBuildsChan, util.NewSequenceGenerator(1))
+	dbCheckFactory := db.NewCheckFactory(dbConn, lockFactory, secretManager, cmd.varSourcePool, checkBuildsChan, util.NewSequenceGenerator(1), elasticsearchClient)
 	dbPipelineFactory := db.NewPipelineFactory(dbConn, lockFactory)
-	dbJobFactory := db.NewJobFactory(dbConn, lockFactory)
+	dbJobFactory := db.NewJobFactory(dbConn, lockFactory, elasticsearchClient)
 	dbPipelineLifecycle := db.NewPipelineLifecycle(dbConn, lockFactory, elasticsearchClient)
 	dbPipelinePauser := db.NewPipelinePauser(dbConn, lockFactory)
 
@@ -2075,10 +2076,10 @@ func (cmd *RunCommand) isMTLSEnabled() bool {
 
 func NewElasticSearchClient(config ElasticSearchConfig) (*elastic.Client, error) {
 	return elastic.NewClient(
-		elastic.SetURL(config.User),
-		elastic.SetURL(config.User, config.Password),
+		elastic.SetURL(config.Url.String()),
+		elastic.SetBasicAuth(config.User, config.Password),
 		elastic.SetHealthcheck(true),
 		elastic.SetHealthcheckTimeoutStartup(1*time.Minute),
-		elastic.SetHealthcheckTimeout(5*time.Second),
+		elastic.SetHealthcheckTimeout(30*time.Second),
 	)
 }

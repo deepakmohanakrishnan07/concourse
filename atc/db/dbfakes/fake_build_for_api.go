@@ -2,7 +2,8 @@
 package dbfakes
 
 import (
-	"encoding/json"
+    "context"
+    "encoding/json"
 	"sync"
 	"time"
 
@@ -666,7 +667,7 @@ func (fake *FakeBuildForAPI) EndTimeReturnsOnCall(i int, result1 time.Time) {
 	}{result1}
 }
 
-func (fake *FakeBuildForAPI) Events(arg1 uint) (db.EventSource, error) {
+func (fake *FakeBuildForAPI) Events(arg1 uint, ctx context.Context) (db.EventSource, error) {
 	fake.eventsMutex.Lock()
 	ret, specificReturn := fake.eventsReturnsOnCall[len(fake.eventsArgsForCall)]
 	fake.eventsArgsForCall = append(fake.eventsArgsForCall, struct {

@@ -468,7 +468,7 @@ func (p *pipeline) resource(where map[string]interface{}) (Resource, bool, error
 		RunWith(p.conn).
 		QueryRow()
 
-	resource := newEmptyResource(p.conn, p.lockFactory)
+	resource := newEmptyResource(p.conn, p.lockFactory, p.elasticsearchClient)
 	err := scanResource(resource, row)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -483,16 +483,16 @@ func (p *pipeline) resource(where map[string]interface{}) (Resource, bool, error
 
 func (p *pipeline) Builds(page Page) ([]BuildForAPI, Pagination, error) {
 	return getBuildsWithPagination(
-		buildsQuery.Where(sq.Eq{"b.pipeline_id": p.id}), minMaxIdQuery, page, p.conn, p.lockFactory, false)
+		buildsQuery.Where(sq.Eq{"b.pipeline_id": p.id}), minMaxIdQuery, page, p.conn, p.lockFactory, false, p.elasticsearchClient)
 }
 
 func (p *pipeline) BuildsWithTime(page Page) ([]BuildForAPI, Pagination, error) {
 	return getBuildsWithDates(
-		buildsQuery.Where(sq.Eq{"b.pipeline_id": p.id}), minMaxIdQuery, page, p.conn, p.lockFactory)
+		buildsQuery.Where(sq.Eq{"b.pipeline_id": p.id}), minMaxIdQuery, page, p.conn, p.lockFactory, p.elasticsearchClient)
 }
 
 func (p *pipeline) Resources() (Resources, error) {
-	return resources(p.id, p.conn, p.lockFactory)
+	return resources(p.id, p.conn, p.lockFactory, p.elasticsearchClient)
 }
 
 func (p *pipeline) ResourceTypes() (ResourceTypes, error) {
@@ -509,7 +509,7 @@ func (p *pipeline) ResourceTypes() (ResourceTypes, error) {
 	resourceTypes := []ResourceType{}
 
 	for rows.Next() {
-		resourceType := newEmptyResourceType(p.conn, p.lockFactory)
+		resourceType := newEmptyResourceType(p.conn, p.lockFactory, p.elasticsearchClient)
 		err := scanResourceType(resourceType, rows)
 		if err != nil {
 			return nil, err
@@ -534,7 +534,7 @@ func (p *pipeline) resourceType(where map[string]interface{}) (ResourceType, boo
 		RunWith(p.conn).
 		QueryRow()
 
-	resourceType := newEmptyResourceType(p.conn, p.lockFactory)
+	resourceType := newEmptyResourceType(p.conn, p.lockFactory, p.elasticsearchClient)
 	err := scanResourceType(resourceType, row)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -561,7 +561,7 @@ func (p *pipeline) Prototypes() (Prototypes, error) {
 	prototypes := Prototypes{}
 
 	for rows.Next() {
-		prototype := newEmptyPrototype(p.conn, p.lockFactory)
+		prototype := newEmptyPrototype(p.conn, p.lockFactory, nil)
 		err := scanPrototype(prototype, rows)
 		if err != nil {
 			return nil, err
@@ -586,7 +586,7 @@ func (p *pipeline) prototype(where map[string]interface{}) (Prototype, bool, err
 		RunWith(p.conn).
 		QueryRow()
 
-	prototype := newEmptyPrototype(p.conn, p.lockFactory)
+	prototype := newEmptyPrototype(p.conn, p.lockFactory, nil)
 	err := scanPrototype(prototype, row)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -606,7 +606,7 @@ func (p *pipeline) Job(name string) (Job, bool, error) {
 		"j.pipeline_id": p.id,
 	}).RunWith(p.conn).QueryRow()
 
-	job := newEmptyJob(p.conn, p.lockFactory)
+	job := newEmptyJob(p.conn, p.lockFactory, p.elasticsearchClient)
 	err := scanJob(job, row)
 
 	if err != nil {
@@ -633,7 +633,7 @@ func (p *pipeline) Jobs() (Jobs, error) {
 		return nil, err
 	}
 
-	jobs, err := scanJobs(p.conn, p.lockFactory, rows)
+	jobs, err := scanJobs(p.conn, p.lockFactory, rows, p.elasticsearchClient)
 	return jobs, err
 }
 
@@ -1220,7 +1220,7 @@ func getNewBuildNameForJob(tx Tx, jobName string, pipelineID int) (string, int, 
 	return buildName, jobID, err
 }
 
-func resources(pipelineID int, conn Conn, lockFactory lock.LockFactory) (Resources, error) {
+func resources(pipelineID int, conn Conn, lockFactory lock.LockFactory, elasticsearchClient *elastic.Client) (Resources, error) {
 	rows, err := resourcesQuery.
 		Where(sq.Eq{"r.pipeline_id": pipelineID}).
 		OrderBy("r.name").
@@ -1234,7 +1234,7 @@ func resources(pipelineID int, conn Conn, lockFactory lock.LockFactory) (Resourc
 	var resources Resources
 
 	for rows.Next() {
-		newResource := newEmptyResource(conn, lockFactory)
+		newResource := newEmptyResource(conn, lockFactory, elasticsearchClient)
 		err := scanResource(newResource, rows)
 		if err != nil {
 			return nil, err

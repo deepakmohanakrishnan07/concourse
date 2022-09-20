@@ -101,7 +101,7 @@ type Envelope struct {
 	Data    *json.RawMessage `json:"data"`
 	Event   atc.EventType    `json:"event"`
 	Version atc.EventVersion `json:"version"`
-	EventID string           `json:"event_id"`
+	EventID json.Number      `json:"event_id"`
 }
 
 func (m Message) MarshalJSON() ([]byte, error) {
@@ -119,7 +119,7 @@ func (m Message) MarshalJSON() ([]byte, error) {
 	return json.Marshal(envelope)
 }
 
-func (m *Message) UnmarshalJSON(bytes []byte) error {
+func (m Message) UnmarshalJSON(bytes []byte) error {
 	var envelope Envelope
 
 	err := json.Unmarshal(bytes, &envelope)

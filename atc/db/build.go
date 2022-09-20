@@ -450,7 +450,7 @@ func (b *build) Job() (Job, bool, error) {
 		"j.active": true,
 	}).RunWith(b.conn).QueryRow()
 
-	job := newEmptyJob(b.conn, b.lockFactory)
+	job := newEmptyJob(b.conn, b.lockFactory, b.elasticsearchClient)
 	err := scanJob(job, row)
 
 	if err != nil {
@@ -1152,6 +1152,7 @@ func (b *build) Events(from uint) (EventSource, error) {
 	}
 
 	return newBuildEventSource(
+		context.Background(),
 		b.id,
 		b.eventsTable(),
 		b.conn,
@@ -2009,7 +2010,7 @@ func (b *build) saveEvent(tx Tx, event atc.Event) error {
 	}
 
 	indexRequest := b.elasticsearchClient.Index()
-	_, err = indexRequest.Index("build_event_logs").BodyJson(eventDoc).Do(context.Background())
+	_, err = indexRequest.Index(indexPatternName).BodyJson(eventDoc).Do(context.Background())
 
 	return err
 }

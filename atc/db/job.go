@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/olivere/elastic/v7"
 	"sort"
 	"strconv"
 	"strings"
@@ -164,8 +165,8 @@ type job struct {
 	nonce     *string
 }
 
-func newEmptyJob(conn Conn, lockFactory lock.LockFactory) *job {
-	return &job{pipelineRef: pipelineRef{conn: conn, lockFactory: lockFactory}}
+func newEmptyJob(conn Conn, lockFactory lock.LockFactory, elasticsearchClient *elastic.Client) *job {
+	return &job{pipelineRef: pipelineRef{conn: conn, lockFactory: lockFactory, elasticsearchClient: elasticsearchClient}}
 }
 
 func (j *job) SetHasNewInputs(hasNewInputs bool) error {
@@ -545,7 +546,7 @@ func (j *job) BuildsWithTime(page Page) ([]BuildForAPI, Pagination, error) {
 			"j.name":        j.name,
 			"j.pipeline_id": j.pipelineID,
 		})
-	return getBuildsWithDates(newBuildsQuery, newMinMaxIdQuery, page, j.conn, j.lockFactory)
+	return getBuildsWithDates(newBuildsQuery, newMinMaxIdQuery, page, j.conn, j.lockFactory, j.elasticsearchClient)
 }
 
 func (j *job) Builds(page Page) ([]BuildForAPI, Pagination, error) {
@@ -557,7 +558,7 @@ func (j *job) Builds(page Page) ([]BuildForAPI, Pagination, error) {
 			"j.pipeline_id": j.pipelineID,
 		})
 
-	return getBuildsWithPagination(newBuildsQuery, newMinMaxIdQuery, page, j.conn, j.lockFactory, false)
+	return getBuildsWithPagination(newBuildsQuery, newMinMaxIdQuery, page, j.conn, j.lockFactory, false, j.elasticsearchClient)
 }
 
 func (j *job) ChronoBuilds(page Page) ([]BuildForAPI, Pagination, error) {
@@ -569,7 +570,7 @@ func (j *job) ChronoBuilds(page Page) ([]BuildForAPI, Pagination, error) {
 			"j.pipeline_id": j.pipelineID,
 		})
 
-	return getBuildsWithPagination(newBuildsQuery, newMinMaxIdQuery, page, j.conn, j.lockFactory, true)
+	return getBuildsWithPagination(newBuildsQuery, newMinMaxIdQuery, page, j.conn, j.lockFactory, true, j.elasticsearchClient)
 }
 
 func (j *job) Build(name string) (Build, bool, error) {
@@ -807,7 +808,7 @@ func (j *job) GetPendingBuilds() ([]Build, error) {
 		"j.pipeline_id": j.pipelineID,
 	}).RunWith(j.conn).QueryRow()
 
-	job := newEmptyJob(j.conn, j.lockFactory)
+	job := newEmptyJob(j.conn, j.lockFactory, j.elasticsearchClient)
 	err := scanJob(job, row)
 	if err != nil {
 		return nil, err
@@ -1453,13 +1454,13 @@ func scanJob(j *job, row scannable) error {
 	return nil
 }
 
-func scanJobs(conn Conn, lockFactory lock.LockFactory, rows *sql.Rows) (Jobs, error) {
+func scanJobs(conn Conn, lockFactory lock.LockFactory, rows *sql.Rows, elasticsearchClient *elastic.Client) (Jobs, error) {
 	defer Close(rows)
 
 	jobs := Jobs{}
 
 	for rows.Next() {
-		job := newEmptyJob(conn, lockFactory)
+		job := newEmptyJob(conn, lockFactory, elasticsearchClient)
 		err := scanJob(job, rows)
 		if err != nil {
 			return nil, err

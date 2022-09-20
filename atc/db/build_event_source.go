@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/olivere/elastic/v7"
 	"strconv"
 	"sync"
@@ -16,7 +17,7 @@ import (
 var ErrEndOfBuildEventStream = errors.New("end of build event stream")
 var ErrBuildEventStreamClosed = errors.New("build event stream closed")
 
-const indexPatternPrefix = "concourse-build-events"
+const indexPatternName = "concourse-build-events"
 
 //counterfeiter:generate . EventSource
 type EventSource interface {
@@ -27,6 +28,7 @@ type EventSource interface {
 type buildCompleteWatcherFunc func(Tx, int) (bool, error)
 
 func newBuildEventSource(
+	ctx context.Context,
 	buildID int,
 	table string,
 	conn Conn,
@@ -38,6 +40,7 @@ func newBuildEventSource(
 	wg := new(sync.WaitGroup)
 
 	source := &buildEventSource{
+		ctx:     ctx,
 		buildID: buildID,
 		table:   table,
 
@@ -61,6 +64,7 @@ func newBuildEventSource(
 }
 
 type buildEventSource struct {
+	ctx     context.Context
 	buildID int
 	table   string
 
@@ -130,28 +134,30 @@ func (source *buildEventSource) collectEvents(from uint) {
 			return
 		}
 
-		existsInPostgres := false
-		err = sq.Select("1").
-			Prefix("SELECT EXISTS (").
-			From(source.table).
-			Where(sq.Or{
-				sq.Eq{"build_id": source.buildID},
-				sq.Eq{"build_id_old": source.buildID},
-			}).
-			Suffix(")").
-			RunWith(tx).
-			QueryRow().
-			Scan(&existsInPostgres)
+		tableExists := false
+		buildExists := false
 
-		if err != nil {
-			source.err = err
-			close(source.events)
-			return
-		}
+		//err = sq.Select("1").
+		//	Prefix("SELECT EXISTS (").
+		//	From(source.table).
+		//	Where(sq.Or{
+		//		sq.Eq{"build_id": source.buildID},
+		//		sq.Eq{"build_id_old": source.buildID},
+		//	}).
+		//	Suffix(")").
+		//	RunWith(tx).
+		//	QueryRow().
+		//	Scan(&existsInPostgres)
+		//
+		//if err != nil {
+		//	source.err = err
+		//	close(source.events)
+		//	return
+		//}
 
 		rowsReturned := 0
 
-		if existsInPostgres {
+		if tableExists || buildExists {
 			rows, err := psql.Select("event_id", "type", "version", "payload").
 				From(source.table).
 				Where(sq.Or{
@@ -188,7 +194,7 @@ func (source *buildEventSource) collectEvents(from uint) {
 					Data:    &data,
 					Event:   atc.EventType(t),
 					Version: atc.EventVersion(v),
-					EventID: strconv.Itoa(cursor),
+					EventID: json.Number(strconv.Itoa(cursor)),
 				}
 
 				select {
@@ -203,7 +209,7 @@ func (source *buildEventSource) collectEvents(from uint) {
 			}
 		} else {
 
-			req := source.elasticsearchClient.Search(indexPatternPrefix).
+			req := source.elasticsearchClient.Search(indexPatternName).
 				Query(elastic.NewTermQuery("build_id", source.buildID)).
 				Sort("event_id", true).
 				Size(batchSize)
@@ -213,7 +219,7 @@ func (source *buildEventSource) collectEvents(from uint) {
 			}
 
 			//revisit: to use request context explicitly to cancel the operation when the request is closed
-			searchResult, err := req.Do(context.Background())
+			searchResult, err := req.Do(source.ctx)
 			if err != nil {
 				source.err = err
 				close(source.events)
@@ -222,18 +228,25 @@ func (source *buildEventSource) collectEvents(from uint) {
 
 			rowsReturned = len(searchResult.Hits.Hits)
 			if rowsReturned == 0 {
+				source.err = ErrEndOfBuildEventStream
 				close(source.events)
 				return
 			}
 
-			var envelope event.Envelope
 			for _, hit := range searchResult.Hits.Hits {
-
+				var envelope event.Envelope
 				if err = json.Unmarshal(hit.Source, &envelope); err != nil {
 					source.err = err
 					close(source.events)
 					return
 				}
+				cursor, err = strconv.Atoi(string(envelope.EventID))
+				if err != nil {
+					source.err = err
+					close(source.events)
+					return
+				}
+
 				select {
 				case source.events <- envelope:
 				case <-source.stop:
@@ -242,17 +255,11 @@ func (source *buildEventSource) collectEvents(from uint) {
 					return
 				}
 			}
-			cursor, err = strconv.Atoi(envelope.EventID)
-			if err != nil {
-				source.err = err
-				close(source.events)
-				return
-			}
-
 		}
 
 		err = tx.Commit()
 		if err != nil {
+			source.err = err
 			close(source.events)
 			return
 		}
@@ -267,6 +274,7 @@ func (source *buildEventSource) collectEvents(from uint) {
 			close(source.events)
 			return
 		}
+		fmt.Printf("from: %d | completed: %v | rowsReturned: %d | batchSize: %d", from, completed, rowsReturned, batchSize)
 
 		select {
 		case <-source.notifier.Notify():

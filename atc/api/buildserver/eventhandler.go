@@ -3,6 +3,7 @@ package buildserver
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/concourse/concourse/atc/event"
 	"io"
 	"net/http"
 
@@ -39,6 +40,7 @@ func NewEventHandler(logger lager.Logger, build db.BuildForAPI) http.Handler {
 			responseFlusher: w.(http.Flusher),
 		}
 
+		logger.Info("get-build-events", lager.Data{"build-id": build.ID(), "start": eventID})
 		events, err := build.Events(eventID)
 		if err != nil {
 			logger.Error("failed-to-get-build-events", err, lager.Data{"build-id": build.ID(), "start": eventID})
@@ -54,6 +56,7 @@ func NewEventHandler(logger lager.Logger, build db.BuildForAPI) http.Handler {
 			ev, err := events.Next()
 			if err != nil {
 				if err == db.ErrEndOfBuildEventStream {
+					logger.Error("end-of-event-stream", err)
 					err := writer.WriteEnd(eventID)
 					if err != nil {
 						logger.Info("failed-to-write-end", lager.Data{"error": err.Error()})
@@ -69,6 +72,7 @@ func NewEventHandler(logger lager.Logger, build db.BuildForAPI) http.Handler {
 				return
 			}
 
+			logger.Info("get-next-build-event", lager.Data{"build-id": build.ID(), "ev": ev})
 			err = writer.WriteEvent(eventID, ev)
 			if err != nil {
 				logger.Info("failed-to-write-event", lager.Data{"error": err.Error()})
@@ -85,7 +89,7 @@ type eventWriter struct {
 	responseFlusher http.Flusher
 }
 
-func (writer eventWriter) WriteEvent(id uint, envelope interface{}) error {
+func (writer eventWriter) WriteEvent(id uint, envelope event.Envelope) error {
 	payload, err := json.Marshal(envelope)
 	if err != nil {
 		return err
