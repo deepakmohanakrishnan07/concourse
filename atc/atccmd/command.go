@@ -637,7 +637,7 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 
 	elasticsearchClient, err := NewElasticSearchClient(cmd.ElasticSearch)
 	if err != nil {
-		logger.Error("es-client-error", err, lager.Data{"es-config": cmd.ElasticSearch, "es-url": cmd.ElasticSearch.Url.String()})
+		logger.Error("es-client-error", err, lager.Data{"es-user": cmd.ElasticSearch.User, "es-url": cmd.ElasticSearch.Url.String()})
 		return nil, err
 	}
 
